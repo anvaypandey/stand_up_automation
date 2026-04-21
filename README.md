@@ -4,6 +4,8 @@ Automatically collects your daily activity from GitHub, Jira, Slack, and Notion 
 
 Supports any model via [LiteLLM](https://github.com/BerriAI/litellm): Anthropic Claude, OpenAI GPT, Google Gemini, local Ollama, and more.
 
+**Requires Python 3.10+.** The project pins 3.12 via `.python-version`.
+
 ## Example Output
 
 > *🤖 Your Daily Standup — Monday, April 21*
@@ -54,6 +56,7 @@ Set `LLM_MODEL` in your `.env`. It defaults to `claude-sonnet-4-6` (Anthropic).
 1. Go to https://api.slack.com/apps → **Create New App**
 2. Under **OAuth & Permissions**, add these scopes:
    - `channels:history`, `groups:history` — read channel messages
+   - `channels:read`, `groups:read` — list channels you belong to
    - `im:write`, `chat:write` — send DMs
    - `users:read`, `auth:test` — identify yourself
 3. Install the app to your workspace and copy the **Bot User OAuth Token** into `SLACK_BOT_TOKEN`
@@ -91,10 +94,10 @@ After each draft you'll see a prompt:
 ```
 
 - **u** — saves the standup as a positive example and posts it to Slack
-- **d** — asks for an optional reason, then regenerates using a multi-turn conversation so Claude understands exactly what was wrong
+- **d** — asks for an optional reason, then regenerates using a multi-turn conversation so the model knows exactly what was wrong. You get up to 3 regenerations; once the limit is reached, the prompt changes to only offer approve or skip (you can still approve the final draft)
 - **s** — exits without saving or posting
 
-Approved standups are stored in `feedback_log.jsonl`. The next run automatically loads the three most recent approvals as few-shot style examples, so the output improves to match your preferences over time.
+Approved standups are stored in `feedback_log.jsonl`. The next run automatically loads the three most recent approvals as few-shot examples, so the output improves to match your preferences over time.
 
 ---
 
@@ -104,7 +107,7 @@ Approved standups are stored in `feedback_log.jsonl`. The next run automatically
 standup-bot/
 ├── main.py                    # Entry point and orchestration
 ├── collectors/
-│   ├── github.py              # GitHub PRs, commits, and code reviews
+│   ├── github.py              # GitHub merged PRs, open PRs, and code reviews
 │   ├── jira.py                # Jira ticket activity and comments
 │   ├── slack.py               # Slack messages sent and mentions received
 │   └── notion.py              # Recently edited Notion pages
@@ -112,8 +115,18 @@ standup-bot/
 │   ├── summariser.py          # LLM call via LiteLLM + prompt construction
 │   ├── slack_delivery.py      # Posts the standup to your Slack DM
 │   └── feedback.py            # Feedback log read/write
+├── tests/
+│   ├── helpers.py             # Shared mock_response helper
+│   ├── test_github.py
+│   ├── test_jira.py
+│   ├── test_slack.py
+│   ├── test_notion.py
+│   ├── test_summariser.py
+│   ├── test_slack_delivery.py
+│   └── test_feedback.py
 ├── feedback_log.jsonl         # Created on first run — gitignored
 ├── .env.example               # Credential and model configuration template
+├── .python-version            # Pins Python 3.12 for pyenv
 └── requirements.txt
 ```
 
@@ -134,3 +147,18 @@ activity["github"] = fetch_github_activity(github_token, github_username, hours=
 **Post to a channel instead of a DM** — in [core/slack_delivery.py](core/slack_delivery.py), replace the `conversations.open` call with a hardcoded channel ID passed directly to `chat.postMessage`
 
 **Use a different model per environment** — set `LLM_MODEL` in your `.env`; no code changes required
+
+---
+
+## Running Tests
+
+```bash
+python -m pytest tests/
+```
+
+All integrations are fully mocked — no API keys or network access needed.
+
+```bash
+python -m pytest tests/ -v          # verbose output
+python -m pytest tests/test_jira.py # single file
+```
