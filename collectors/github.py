@@ -1,20 +1,16 @@
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
 PR_AUTHOR_LIMIT = 20
 PR_REVIEW_LIMIT = 10
 
 
-def fetch_github_activity(token: str, username: str, hours: int = 24) -> dict:
-    """Fetch PRs and review activity for the last N hours.
-
-    Note: GitHub's search API only accepts date granularity for the `updated:`
-    filter, so the effective window is midnight-to-now on the calculated date,
-    not a precise rolling N-hour window.
-    """
+def fetch_github_activity(token: str, username: str, since: datetime | None = None) -> dict:
+    """Fetch PRs and review activity since the given datetime (defaults to activity_since())."""
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d")
+    since = (since or activity_since()).strftime("%Y-%m-%d")
     activity = {"merged_prs": [], "open_prs": [], "reviews": []}
 
     # PRs authored by user

@@ -1,12 +1,13 @@
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
 NOTION_PAGE_SIZE = 20
 
 
-def fetch_notion_activity(token: str, hours: int = 24) -> dict:
-    """Fetch Notion pages last edited by the current user in the last N hours.
+def fetch_notion_activity(token: str, since: datetime | None = None) -> dict:
+    """Fetch Notion pages last edited by the current user since the given datetime.
 
     Note: Notion's search API returns at most 20 results sorted by last_edited_time.
     If teammates are highly active, pages you edited may fall outside the first 20
@@ -17,7 +18,7 @@ def fetch_notion_activity(token: str, hours: int = 24) -> dict:
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json",
     }
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = since or activity_since()
     activity = {"edited_pages": []}
 
     # Resolve current user's Notion ID to filter out edits by teammates

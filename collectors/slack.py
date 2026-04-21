@@ -1,5 +1,6 @@
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
 CONVERSATIONS_FETCH_LIMIT = 50
@@ -8,10 +9,10 @@ HISTORY_LIMIT = 50
 MESSAGE_PREVIEW_LENGTH = 120
 
 
-def fetch_slack_activity(token: str, hours: int = 24, user_id: str | None = None) -> dict:
+def fetch_slack_activity(token: str, since: datetime | None = None, user_id: str | None = None) -> dict:
     """Fetch messages sent and mentions received from Slack."""
     headers = {"Authorization": f"Bearer {token}"}
-    oldest = str((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
+    oldest = str((since or activity_since()).timestamp())
     activity = {"messages_sent": [], "mentions": [], "channels_active": []}
 
     # Resolve user ID if not provided

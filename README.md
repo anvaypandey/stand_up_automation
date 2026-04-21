@@ -2,7 +2,7 @@
 
 Automatically collects your daily activity from GitHub, Jira, Slack, and Notion — then uses an LLM to write your standup and post it to your Slack DM every morning.
 
-Supports any model via [LiteLLM](https://github.com/BerriAI/litellm): Anthropic Claude, OpenAI GPT, Google Gemini, local Ollama, and more.
+Supports any model via [LiteLLM](https://github.com/BerriAI/litellm): Anthropic Claude, OpenAI GPT, Google Gemini, Ollama cloud, local Ollama, and more.
 
 **Requires Python 3.10+.** The project pins 3.12 via `.python-version`.
 
@@ -38,38 +38,67 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
-All integrations except the LLM provider key are optional. The bot skips any source whose credentials are absent.
+The bot loads `.env` automatically at startup. All integrations except the LLM provider key are optional — the bot skips any source whose credentials are absent.
 
 ### 3. Choose a model
 
-Set `LLM_MODEL` in your `.env`. It defaults to `claude-sonnet-4-6` (Anthropic).
+Set `LLM_MODEL` in your `.env`. Defaults to `claude-sonnet-4-6` (Anthropic) if not set.
 
-| Provider | `LLM_MODEL` value | API key env var |
+| Provider | `LLM_MODEL` value | Required env vars |
 |---|---|---|
 | Anthropic | `claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
 | OpenAI | `gpt-4o` | `OPENAI_API_KEY` |
 | Google Gemini | `gemini/gemini-1.5-pro` | `GEMINI_API_KEY` |
+| Ollama cloud | `ollama_chat/gemma3:4b` | `OLLAMA_API_KEY`, `OLLAMA_API_BASE` |
 | Local Ollama | `ollama/llama3` | *(none)* |
+
+#### Using Ollama cloud (ollama.com)
+
+1. Sign up at [ollama.com](https://ollama.com) and copy your API key
+2. Set in `.env`:
+   ```
+   OLLAMA_API_KEY=your-key
+   OLLAMA_API_BASE=https://api.ollama.com
+   LLM_MODEL=ollama_chat/gemma3:4b
+   ```
+3. To see all available models, run:
+   ```bash
+   curl https://api.ollama.com/api/tags \
+     -H "Authorization: Bearer $OLLAMA_API_KEY" | python3 -m json.tool
+   ```
+   Free/small models include `gemma3:4b` and `ministral-3:3b`.
 
 ### 4. Create a Slack Bot (optional — for posting and Slack data collection)
 
-1. Go to https://api.slack.com/apps → **Create New App**
-2. Under **OAuth & Permissions**, add these scopes:
+1. Go to https://api.slack.com/apps → **Create New App** → **From scratch**
+2. Under **OAuth & Permissions → Bot Token Scopes**, add:
    - `channels:history`, `groups:history` — read channel messages
    - `channels:read`, `groups:read` — list channels you belong to
-   - `im:write`, `chat:write` — send DMs
-   - `users:read`, `auth:test` — identify yourself
-3. Install the app to your workspace and copy the **Bot User OAuth Token** into `SLACK_BOT_TOKEN`
+   - `im:write`, `chat:write` — send DMs and post/update/delete messages
+   - `reactions:read` — read emoji reactions (required for the Slack feedback loop)
+   - `users:read` — look up user info
+3. Click **Install to Workspace** and copy the **Bot User OAuth Token** (`xoxb-...`) into `SLACK_BOT_TOKEN`
+4. Find your personal Slack user ID: click your profile → **⋮** → **Copy member ID**. Set it as `SLACK_USER_ID` so the bot DMs you (not itself)
 
-### 5. Run
+> **Note:** `auth:test` is not a scope you add manually — it is available to all bot tokens by default.
+
+### 5. Set up Notion (optional)
+
+1. Go to https://www.notion.so/profile/integrations → **New integration**
+2. Copy the **Internal Integration Secret** (`secret_...`) into `NOTION_TOKEN`
+3. Open each Notion page/database you want tracked → **...** → **Connect to** → select your integration
+
+> Without step 3, the token won't have access to any pages even if it's valid.
+
+### 6. Run
 
 ```bash
 python main.py
 ```
 
-The bot fetches activity, generates a draft, and prompts you to approve or regenerate before posting.
+The bot fetches activity, generates a draft, posts it to your Slack DM, and waits for your reaction. See [Feedback Loop](#feedback-loop) below.
 
-### 6. Schedule it daily (runs at 9 am on weekdays)
+### 7. Schedule it daily (runs at 9 am on weekdays)
 
 ```bash
 crontab -e
@@ -78,26 +107,64 @@ crontab -e
 Add:
 
 ```
-0 9 * * 1-5 cd /path/to/standup-bot && python main.py
+0 9 * * 1-5 cd /path/to/standup-bot && source .env && python main.py
 ```
 
-`python-dotenv` loads `.env` automatically — no manual `export` needed.
+---
+
+## Logging
+
+Every run appends to `standup.log` in the project root. Log lines include timestamps and severity:
+
+```
+2026-04-21 09:00:01 INFO Standup Bot starting...
+2026-04-21 09:00:02 INFO Fetching activity since 2026-04-20 09:00 UTC
+2026-04-21 09:00:03 INFO Fetching GitHub activity...
+2026-04-21 09:00:06 INFO Posting draft to Slack DM (reaction timeout: 300s)...
+2026-04-21 09:05:07 INFO Standup approved.
+```
+
+`standup.log` is gitignored. To watch logs live: `tail -f standup.log`
+
+---
+
+## Activity Window
+
+All collectors look back **24 hours** by default. On **Mondays**, the window automatically extends to **last Friday at the same time**, so weekend work is not missed.
+
+```
+Mon 9 am run  →  fetches since Fri 9 am  (72 h)
+Tue–Fri 9 am  →  fetches since yesterday 9 am  (24 h)
+```
+
+To override the default timeout for Slack reaction polling, set `SLACK_FEEDBACK_TIMEOUT` (seconds) in your `.env`:
+
+```
+SLACK_FEEDBACK_TIMEOUT=180   # 3 minutes
+```
 
 ---
 
 ## Feedback Loop
 
-After each draft you'll see a prompt:
+When `SLACK_BOT_TOKEN` is set, the entire feedback loop happens inside Slack. The bot posts the draft to your DM with a reaction prompt at the bottom:
+
+> *React to respond: ✅ approve · 🔁 regenerate (reply in thread with reason) · ⏭️ skip · Waiting 300s…*
+
+| Reaction | What happens |
+|---|---|
+| ✅ | Saves the standup as a positive example, removes the prompt footer |
+| 🔁 | Deletes the draft, regenerates (reply in the thread first to give a reason), reposts |
+| ⏭️ | Deletes the draft, exits without saving |
+| *(no reaction within timeout)* | Removes the prompt footer and leaves the message posted |
+
+You get up to 3 regenerations. Approved standups are stored in `feedback_log.jsonl` and used as few-shot examples on the next run, so output improves over time.
+
+**Without a Slack token**, the bot falls back to a terminal prompt:
 
 ```
-👍 Approve and post (u) / 👎 Regenerate (d) / ⏭️  Skip posting (s):
+👍 Approve (u) / 👎 Regenerate (d) / ⏭️  Skip (s):
 ```
-
-- **u** — saves the standup as a positive example and posts it to Slack
-- **d** — asks for an optional reason, then regenerates using a multi-turn conversation so the model knows exactly what was wrong. You get up to 3 regenerations; once the limit is reached, the prompt changes to only offer approve or skip (you can still approve the final draft)
-- **s** — exits without saving or posting
-
-Approved standups are stored in `feedback_log.jsonl`. The next run automatically loads the three most recent approvals as few-shot examples, so the output improves to match your preferences over time.
 
 ---
 
@@ -110,10 +177,11 @@ standup-bot/
 │   ├── github.py              # GitHub merged PRs, open PRs, and code reviews
 │   ├── jira.py                # Jira ticket activity and comments
 │   ├── slack.py               # Slack messages sent and mentions received
-│   └── notion.py              # Recently edited Notion pages
+│   ├── notion.py              # Recently edited Notion pages
+│   └── utils.py               # Shared activity_since() time-window helper
 ├── core/
 │   ├── summariser.py          # LLM call via LiteLLM + prompt construction
-│   ├── slack_delivery.py      # Posts the standup to your Slack DM
+│   ├── slack_delivery.py      # Posts drafts, polls reactions, finalises or deletes
 │   └── feedback.py            # Feedback log read/write
 ├── tests/
 │   ├── helpers.py             # Shared mock_response helper
@@ -124,7 +192,9 @@ standup-bot/
 │   ├── test_summariser.py
 │   ├── test_slack_delivery.py
 │   └── test_feedback.py
+├── standup.log                # Created on first run — gitignored
 ├── feedback_log.jsonl         # Created on first run — gitignored
+├── .env                       # Your credentials (gitignored)
 ├── .env.example               # Credential and model configuration template
 ├── .python-version            # Pins Python 3.12 for pyenv
 └── requirements.txt
@@ -138,11 +208,7 @@ standup-bot/
 
 **Add or remove sources** — comment out the relevant block in [main.py](main.py)
 
-**Adjust the lookback window** — pass `hours=48` to any collector for a longer window:
-
-```python
-activity["github"] = fetch_github_activity(github_token, github_username, hours=48)
-```
+**Change the reaction timeout** — set `SLACK_FEEDBACK_TIMEOUT` (seconds) in `.env`
 
 **Post to a channel instead of a DM** — in [core/slack_delivery.py](core/slack_delivery.py), replace the `conversations.open` call with a hardcoded channel ID passed directly to `chat.postMessage`
 
@@ -162,3 +228,12 @@ All integrations are fully mocked — no API keys or network access needed.
 python -m pytest tests/ -v          # verbose output
 python -m pytest tests/test_jira.py # single file
 ```
+
+---
+
+## Known Limitations
+
+- **Slack channel scan**: requires `channels:read` and `groups:read` scopes. Without them, Slack activity is skipped but the standup still generates from other sources.
+- **Notion page limit**: Notion's search API returns at most 20 results. If teammates are very active, pages you edited may be pushed out of the first page of results.
+- **GitHub date granularity**: GitHub's search API filters by date, not exact time, so the effective window is midnight-to-now on the calculated start date.
+- **Jira**: placeholder credentials (`yourcompany.atlassian.net`) will be skipped automatically with a 410 warning.

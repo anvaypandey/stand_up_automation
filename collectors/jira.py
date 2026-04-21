@@ -1,6 +1,7 @@
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from requests.auth import HTTPBasicAuth
+from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
 JIRA_MAX_RESULTS = 20
@@ -22,16 +23,16 @@ def extract_comment_text(body) -> str:
     return ""
 
 
-def fetch_jira_activity(base_url: str, email: str, api_token: str, hours: int = 24) -> dict:
-    """Fetch Jira issues updated/transitioned in the last N hours."""
+def fetch_jira_activity(base_url: str, email: str, api_token: str, since: datetime | None = None) -> dict:
+    """Fetch Jira issues updated/transitioned since the given datetime (defaults to activity_since())."""
     auth = HTTPBasicAuth(email, api_token)
     headers = {"Accept": "application/json"}
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    since = cutoff.strftime("%Y-%m-%d %H:%M")
+    cutoff = since or activity_since()
+    since_str = cutoff.strftime("%Y-%m-%d %H:%M")
 
     activity = {"done": [], "in_progress": [], "todo": [], "commented": []}
 
-    jql = f'assignee = currentUser() AND updated >= "{since}" ORDER BY updated DESC'
+    jql = f'assignee = currentUser() AND updated >= "{since_str}" ORDER BY updated DESC'
     resp = requests.get(
         f"{base_url}/rest/api/3/search",
         headers=headers,

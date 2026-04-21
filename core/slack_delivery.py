@@ -1,7 +1,28 @@
+import time
 import requests
 from datetime import date
 
 HTTP_TIMEOUT = 10
+REACTION_POLL_INTERVAL = 5
+APPROVE_EMOJI = "white_check_mark"   # ✅
+REGEN_EMOJI = "arrows_clockwise"     # 🔁
+SKIP_EMOJI = "next_track_button"     # ⏭️
+
+
+def _open_dm_channel(headers: dict, user_id: str) -> str:
+    dm_resp = requests.post(
+        "https://slack.com/api/conversations.open",
+        headers=headers,
+        json={"users": user_id},
+        timeout=HTTP_TIMEOUT,
+    )
+    dm_data = dm_resp.json() if dm_resp.ok else {}
+    if not dm_data.get("ok"):
+        raise RuntimeError(f"Failed to open DM: {dm_data.get('error', f'HTTP {dm_resp.status_code}')}")
+    channel_id = dm_data.get("channel", {}).get("id")
+    if not channel_id:
+        raise RuntimeError("Failed to open DM: response missing channel ID")
+    return channel_id
 
 
 def post_to_slack_dm(bot_token: str, standup_text: str, user_id: str | None = None) -> None:
@@ -18,20 +39,9 @@ def post_to_slack_dm(bot_token: str, standup_text: str, user_id: str | None = No
         if not user_id:
             raise ValueError("Could not determine Slack user ID. Check your bot token.")
 
-    dm_resp = requests.post(
-        "https://slack.com/api/conversations.open",
-        headers=headers,
-        json={"users": user_id},
-        timeout=HTTP_TIMEOUT,
-    )
-    dm_data = dm_resp.json() if dm_resp.ok else {}
-    if not dm_data.get("ok"):
-        raise RuntimeError(f"Failed to open DM: {dm_data.get('error', f'HTTP {dm_resp.status_code}')}")
-    channel_id = dm_data.get("channel", {}).get("id")
-    if not channel_id:
-        raise RuntimeError("Failed to open DM: response missing channel ID")
-
+    channel_id = _open_dm_channel(headers, user_id)
     today = date.today().strftime("%A, %B %d")
+
     msg_resp = requests.post(
         "https://slack.com/api/chat.postMessage",
         headers=headers,
@@ -45,3 +55,123 @@ def post_to_slack_dm(bot_token: str, standup_text: str, user_id: str | None = No
     result = msg_resp.json() if msg_resp.ok else {}
     if not result.get("ok"):
         raise RuntimeError(f"Failed to post message: {result.get('error', f'HTTP {msg_resp.status_code}')}")
+
+
+def post_standup_draft(
+    bot_token: str, standup_text: str, user_id: str, timeout: int = 120
+) -> tuple[str, str]:
+    """Post a standup draft with reaction instructions. Returns (channel_id, message_ts)."""
+    headers = {
+        "Authorization": f"Bearer {bot_token}",
+        "Content-Type": "application/json",
+    }
+    channel_id = _open_dm_channel(headers, user_id)
+    today = date.today().strftime("%A, %B %d")
+    footer = (
+        f"\n\n_React to respond: ✅ approve · 🔁 regenerate (reply in thread with reason)"
+        f" · ⏭️ skip · Waiting {timeout}s…_"
+    )
+
+    msg_resp = requests.post(
+        "https://slack.com/api/chat.postMessage",
+        headers=headers,
+        json={
+            "channel": channel_id,
+            "text": f"*🤖 Your Daily Standup — {today}*\n\n{standup_text}{footer}",
+            "unfurl_links": False,
+        },
+        timeout=HTTP_TIMEOUT,
+    )
+    result = msg_resp.json() if msg_resp.ok else {}
+    if not result.get("ok"):
+        raise RuntimeError(f"Failed to post draft: {result.get('error', f'HTTP {msg_resp.status_code}')}")
+
+    return channel_id, result["ts"]
+
+
+def poll_for_reaction(
+    bot_token: str, channel_id: str, ts: str, user_id: str, timeout: int = 120
+) -> tuple[str, str]:
+    """Poll for emoji reactions on a draft message.
+
+    Returns (action, reason) where action is 'approve', 'regenerate', 'skip', or 'timeout'.
+    For 'regenerate', reason is taken from the first thread reply by the user.
+    """
+    headers = {"Authorization": f"Bearer {bot_token}"}
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        time.sleep(REACTION_POLL_INTERVAL)
+
+        try:
+            react_resp = requests.get(
+                "https://slack.com/api/reactions.get",
+                headers=headers,
+                params={"channel": channel_id, "timestamp": ts, "full": True},
+                timeout=HTTP_TIMEOUT,
+            )
+            react_data = react_resp.json() if react_resp.ok else {}
+        except requests.exceptions.RequestException:
+            continue
+        if not react_data.get("ok"):
+            continue
+
+        reactions = {r["name"] for r in react_data.get("message", {}).get("reactions", [])}
+
+        if APPROVE_EMOJI in reactions:
+            return "approve", ""
+        if SKIP_EMOJI in reactions:
+            return "skip", ""
+        if REGEN_EMOJI in reactions:
+            reason = _fetch_thread_reply(headers, channel_id, ts, user_id)
+            return "regenerate", reason
+
+    return "timeout", ""
+
+
+def _fetch_thread_reply(headers: dict, channel_id: str, ts: str, user_id: str) -> str:
+    """Return the first thread reply from the user (used as regeneration reason)."""
+    try:
+        resp = requests.get(
+            "https://slack.com/api/conversations.replies",
+            headers=headers,
+            params={"channel": channel_id, "ts": ts, "limit": 10},
+            timeout=HTTP_TIMEOUT,
+        )
+        data = resp.json() if resp.ok else {}
+    except requests.exceptions.RequestException:
+        return ""
+    for msg in (data.get("messages") or [])[1:]:  # skip parent
+        if msg.get("user") == user_id and msg.get("text"):
+            return msg["text"]
+    return ""
+
+
+def finalize_draft(bot_token: str, channel_id: str, ts: str, standup_text: str) -> None:
+    """Update the draft message to the clean final version (removes reaction footer)."""
+    today = date.today().strftime("%A, %B %d")
+    clean_text = f"*🤖 Your Daily Standup — {today}*\n\n{standup_text}"
+    headers = {
+        "Authorization": f"Bearer {bot_token}",
+        "Content-Type": "application/json",
+    }
+    requests.post(
+        "https://slack.com/api/chat.update",
+        headers=headers,
+        json={"channel": channel_id, "ts": ts, "text": clean_text},
+        timeout=HTTP_TIMEOUT,
+    )
+
+
+def delete_message(bot_token: str, channel_id: str, ts: str) -> None:
+    """Delete a Slack message (used to remove rejected or skipped drafts)."""
+    headers = {
+        "Authorization": f"Bearer {bot_token}",
+        "Content-Type": "application/json",
+    }
+    requests.post(
+        "https://slack.com/api/chat.delete",
+        headers=headers,
+        json={"channel": channel_id, "ts": ts},
+        timeout=HTTP_TIMEOUT,
+    )
