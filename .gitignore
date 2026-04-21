@@ -1,0 +1,27 @@
+# Credentials — never commit
+.env
+
+# Personal standup history
+feedback_log.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+
+# macOS
+.DS_Store
