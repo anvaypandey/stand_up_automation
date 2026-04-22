@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 standup-bot: Automatically generate and post your daily standup to Slack.
-Usage: python main.py
+Usage: python main.py [--dry-run]
 """
 
+import argparse
 import logging
 import os
-import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from collectors.github import fetch_github_activity
@@ -14,6 +14,7 @@ from collectors.jira import fetch_jira_activity
 from collectors.slack import fetch_slack_activity
 from collectors.notion import fetch_notion_activity
 from collectors.utils import activity_since
+from core.healthcheck import run_healthchecks
 from core.summariser import generate_standup
 from core.feedback import save_feedback, load_approved_examples
 from core.slack_delivery import post_standup_draft, poll_for_reaction, finalize_draft, delete_message
@@ -37,22 +38,13 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def _get_slack_user_id(token: str) -> str | None:
-    """Resolve the bot's own Slack user ID from the token — called once and shared."""
-    resp = requests.get(
-        "https://slack.com/api/auth.test",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=HTTP_TIMEOUT,
-    )
-    data = resp.json() if resp.ok else {}
-    if not data.get("ok"):
-        log.warning("Could not resolve Slack user ID: %s", data.get('error', 'unknown error'))
-        return None
-    return data.get("user_id")
-
 
 def main():
-    log.info("Standup Bot starting...")
+    parser = argparse.ArgumentParser(description="Generate and post your daily standup.")
+    parser.add_argument("--dry-run", action="store_true", help="Print standup to stdout without posting to Slack.")
+    args = parser.parse_args()
+
+    log.info("Standup Bot starting%s...", " (dry run)" if args.dry_run else "")
 
     model = os.getenv("LLM_MODEL", DEFAULT_MODEL)
     log.info("Using model: %s", model)
@@ -63,51 +55,93 @@ def main():
     else:
         log.info("Fetching activity since %s UTC", since.strftime("%Y-%m-%d %H:%M"))
 
-    activity = {}
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     slack_user_id: str | None = os.getenv("SLACK_USER_ID") or None
 
-    if slack_token and not slack_user_id:
-        slack_user_id = _get_slack_user_id(slack_token)
-
-    # GitHub (optional)
+    # Build configs dict for all configured integrations
+    configs: dict = {}
     github_token = os.getenv("GITHUB_TOKEN")
     github_username = os.getenv("GITHUB_USERNAME")
     if github_token and github_username:
-        log.info("Fetching GitHub activity...")
-        activity["github"] = fetch_github_activity(github_token, github_username, since=since)
-    else:
-        log.info("Skipping GitHub (GITHUB_TOKEN or GITHUB_USERNAME not set)")
+        configs["github"] = {"token": github_token}
 
-    # Jira (optional)
     jira_url = os.getenv("JIRA_BASE_URL")
     jira_email = os.getenv("JIRA_EMAIL")
     jira_token = os.getenv("JIRA_API_TOKEN")
     if jira_url and jira_email and jira_token:
-        log.info("Fetching Jira activity...")
-        activity["jira"] = fetch_jira_activity(jira_url, jira_email, jira_token, since=since)
-    else:
-        log.info("Skipping Jira (JIRA_BASE_URL, JIRA_EMAIL, or JIRA_API_TOKEN not set)")
+        configs["jira"] = {"base_url": jira_url, "email": jira_email, "api_token": jira_token}
 
-    # Slack (optional for collection; also used for delivery)
-    if slack_token and slack_user_id:
-        log.info("Fetching Slack activity...")
-        activity["slack"] = fetch_slack_activity(slack_token, since=since, user_id=slack_user_id)
-    elif slack_token:
-        log.info("Skipping Slack collection (token set but authentication failed)")
-    else:
-        log.info("Skipping Slack collection (SLACK_BOT_TOKEN not set)")
+    if slack_token:
+        configs["slack"] = {"token": slack_token}
 
-    # Notion (optional)
     notion_token = os.getenv("NOTION_TOKEN")
     if notion_token:
-        log.info("Fetching Notion activity...")
-        activity["notion"] = fetch_notion_activity(notion_token, since=since)
+        configs["notion"] = {"token": notion_token}
+
+    # Startup healthcheck — validate all tokens before collecting
+    if configs:
+        health, hc_slack_user_id = run_healthchecks(configs)
+        if not any(health.values()):
+            log.error("All configured integrations failed healthcheck — nothing to collect. Exiting.")
+            return
     else:
+        health, hc_slack_user_id = {}, None
+        log.warning("No integrations configured — standup will be empty. Set at least one integration.")
+
+    # Use the user ID resolved during the healthcheck auth.test call (no second round trip)
+    if slack_token and health.get("slack"):
+        if not slack_user_id:
+            slack_user_id = hc_slack_user_id
+    elif slack_token:
+        log.warning("Skipping Slack (healthcheck failed)")
+        slack_token = None
+
+    # Collect activity — each source is wrapped independently (circuit breaker)
+    activity = {}
+    failed_collectors: list[str] = []
+
+    if "github" in configs and health.get("github"):
+        log.info("Fetching GitHub activity...")
+        try:
+            activity["github"] = fetch_github_activity(github_token, github_username, since=since)
+        except Exception as e:
+            log.warning("GitHub collector failed — skipping: %s", e)
+            failed_collectors.append("GitHub")
+    elif "github" not in configs:
+        log.info("Skipping GitHub (GITHUB_TOKEN or GITHUB_USERNAME not set)")
+
+    if "jira" in configs and health.get("jira"):
+        log.info("Fetching Jira activity...")
+        try:
+            activity["jira"] = fetch_jira_activity(jira_url, jira_email, jira_token, since=since)
+        except Exception as e:
+            log.warning("Jira collector failed — skipping: %s", e)
+            failed_collectors.append("Jira")
+    elif "jira" not in configs:
+        log.info("Skipping Jira (JIRA_BASE_URL, JIRA_EMAIL, or JIRA_API_TOKEN not set)")
+
+    if slack_token and slack_user_id and health.get("slack"):
+        log.info("Fetching Slack activity...")
+        try:
+            activity["slack"] = fetch_slack_activity(slack_token, since=since, user_id=slack_user_id)
+        except Exception as e:
+            log.warning("Slack collector failed — skipping: %s", e)
+            failed_collectors.append("Slack")
+    elif "slack" not in configs:
+        log.info("Skipping Slack collection (SLACK_BOT_TOKEN not set)")
+
+    if "notion" in configs and health.get("notion"):
+        log.info("Fetching Notion activity...")
+        try:
+            activity["notion"] = fetch_notion_activity(notion_token, since=since)
+        except Exception as e:
+            log.warning("Notion collector failed — skipping: %s", e)
+            failed_collectors.append("Notion")
+    elif "notion" not in configs:
         log.info("Skipping Notion (NOTION_TOKEN not set)")
 
     if not activity:
-        log.warning("No data sources configured — standup will be empty. Set at least one integration.")
+        log.warning("No activity collected — standup will be empty.")
 
     approved_examples = load_approved_examples()
     rejected_drafts: list[dict] = []
@@ -117,6 +151,17 @@ def main():
         standup = generate_standup(activity, model, approved_examples=approved_examples)
     except Exception as e:
         log.error("Failed to generate standup: %s", e)
+        return
+
+    if failed_collectors:
+        standup += "\n\n⚠️ Data unavailable today: " + ", ".join(failed_collectors)
+
+    # Dry run: print and exit without posting
+    if args.dry_run:
+        print("\n--- STANDUP (DRY RUN) ---")
+        print(standup)
+        print("------------------------\n")
+        log.info("Dry run — standup not posted.")
         return
 
     if slack_token and slack_user_id:

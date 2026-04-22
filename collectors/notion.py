@@ -1,8 +1,11 @@
+import logging
 import requests
 from datetime import datetime, timezone
 from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
+
+log = logging.getLogger(__name__)
 NOTION_PAGE_SIZE = 20
 
 
@@ -25,7 +28,7 @@ def fetch_notion_activity(token: str, since: datetime | None = None) -> dict:
     me_resp = requests.get("https://api.notion.com/v1/users/me", headers=headers, timeout=HTTP_TIMEOUT)
     my_id = me_resp.json().get("id", "") if me_resp.ok else ""
     if not my_id:
-        print("⚠️  Could not resolve Notion user ID — results may include teammates' edits")
+        log.warning("Could not resolve Notion user ID — results may include teammates' edits")
 
     resp = requests.post(
         "https://api.notion.com/v1/search",
@@ -34,7 +37,7 @@ def fetch_notion_activity(token: str, since: datetime | None = None) -> dict:
         timeout=HTTP_TIMEOUT,
     )
     if not resp.ok:
-        print(f"⚠️  Notion request failed: {resp.status_code}")
+        log.warning("Notion request failed: %s", resp.status_code)
         return activity
 
     for result in resp.json().get("results", []):

@@ -1,9 +1,12 @@
+import logging
 import requests
 from datetime import datetime, timezone
 from requests.auth import HTTPBasicAuth
 from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
+
+log = logging.getLogger(__name__)
 JIRA_MAX_RESULTS = 20
 COMMENT_PREVIEW_LENGTH = 100
 
@@ -41,7 +44,7 @@ def fetch_jira_activity(base_url: str, email: str, api_token: str, since: dateti
         timeout=HTTP_TIMEOUT,
     )
     if not resp.ok:
-        print(f"⚠️  Jira request failed: {resp.status_code}")
+        log.warning("Jira request failed: %s", resp.status_code)
         return activity
 
     for issue in resp.json().get("issues", []):

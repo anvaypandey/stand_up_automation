@@ -1,8 +1,11 @@
+import logging
 import time
 import requests
 from datetime import date
 
 HTTP_TIMEOUT = 10
+
+log = logging.getLogger(__name__)
 REACTION_POLL_INTERVAL = 5
 APPROVE_EMOJI = "white_check_mark"   # ✅
 REGEN_EMOJI = "arrows_clockwise"     # 🔁
@@ -24,37 +27,6 @@ def _open_dm_channel(headers: dict, user_id: str) -> str:
         raise RuntimeError("Failed to open DM: response missing channel ID")
     return channel_id
 
-
-def post_to_slack_dm(bot_token: str, standup_text: str, user_id: str | None = None) -> None:
-    """Post the standup message as a DM to yourself via Slack bot."""
-    headers = {
-        "Authorization": f"Bearer {bot_token}",
-        "Content-Type": "application/json",
-    }
-
-    if not user_id:
-        resp = requests.get("https://slack.com/api/auth.test", headers=headers, timeout=HTTP_TIMEOUT)
-        identity = resp.json() if resp.ok else {}
-        user_id = identity.get("user_id")
-        if not user_id:
-            raise ValueError("Could not determine Slack user ID. Check your bot token.")
-
-    channel_id = _open_dm_channel(headers, user_id)
-    today = date.today().strftime("%A, %B %d")
-
-    msg_resp = requests.post(
-        "https://slack.com/api/chat.postMessage",
-        headers=headers,
-        json={
-            "channel": channel_id,
-            "text": f"*🤖 Your Daily Standup — {today}*\n\n{standup_text}",
-            "unfurl_links": False,
-        },
-        timeout=HTTP_TIMEOUT,
-    )
-    result = msg_resp.json() if msg_resp.ok else {}
-    if not result.get("ok"):
-        raise RuntimeError(f"Failed to post message: {result.get('error', f'HTTP {msg_resp.status_code}')}")
 
 
 def post_standup_draft(
@@ -155,12 +127,15 @@ def finalize_draft(bot_token: str, channel_id: str, ts: str, standup_text: str) 
         "Authorization": f"Bearer {bot_token}",
         "Content-Type": "application/json",
     }
-    requests.post(
+    resp = requests.post(
         "https://slack.com/api/chat.update",
         headers=headers,
         json={"channel": channel_id, "ts": ts, "text": clean_text},
         timeout=HTTP_TIMEOUT,
     )
+    result = resp.json() if resp.ok else {}
+    if not result.get("ok"):
+        log.warning("Failed to finalize draft: %s", result.get("error", f"HTTP {resp.status_code}"))
 
 
 def delete_message(bot_token: str, channel_id: str, ts: str) -> None:
@@ -169,9 +144,12 @@ def delete_message(bot_token: str, channel_id: str, ts: str) -> None:
         "Authorization": f"Bearer {bot_token}",
         "Content-Type": "application/json",
     }
-    requests.post(
+    resp = requests.post(
         "https://slack.com/api/chat.delete",
         headers=headers,
         json={"channel": channel_id, "ts": ts},
         timeout=HTTP_TIMEOUT,
     )
+    result = resp.json() if resp.ok else {}
+    if not result.get("ok"):
+        log.warning("Failed to delete message: %s", result.get("error", f"HTTP {resp.status_code}"))

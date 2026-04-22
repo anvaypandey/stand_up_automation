@@ -19,6 +19,7 @@ Rules:
 """
 
 MAX_TOKENS = 1500
+LLM_TIMEOUT = 60
 
 
 def _build_first_message(activity_data: dict, approved_examples: list[str]) -> str:
@@ -57,7 +58,7 @@ def generate_standup(
         critique += " Please try again."
         messages.append({"role": "user", "content": critique})
 
-    response = litellm.completion(model=model, messages=messages, max_tokens=MAX_TOKENS)
+    response = litellm.completion(model=model, messages=messages, max_tokens=MAX_TOKENS, timeout=LLM_TIMEOUT)
 
     choices = response.choices or []
     if not choices:

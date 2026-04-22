@@ -96,7 +96,13 @@ Set `LLM_MODEL` in your `.env`. Defaults to `claude-sonnet-4-6` (Anthropic) if n
 python main.py
 ```
 
-The bot fetches activity, generates a draft, posts it to your Slack DM, and waits for your reaction. See [Feedback Loop](#feedback-loop) below.
+The bot validates all configured tokens (see [Startup Healthcheck](#startup-healthcheck)), fetches activity, generates a draft, posts it to your Slack DM, and waits for your reaction. See [Feedback Loop](#feedback-loop) below.
+
+**Dry run** — generate and print the standup without posting to Slack or saving feedback:
+
+```bash
+python main.py --dry-run
+```
 
 ### 7. Schedule it daily (runs at 9 am on weekdays)
 
@@ -112,16 +118,43 @@ Add:
 
 ---
 
+## Startup Healthcheck
+
+Before collecting any activity, the bot validates every configured integration token with a lightweight auth call. A summary is printed at startup:
+
+```
+2026-04-22 09:00:01 INFO Healthcheck — ✅ github  ✅ jira  ⚠️  slack  ✅ notion
+```
+
+- Sources that fail the check are skipped — the rest still run.
+- If **every** configured source fails, the bot exits immediately with an error rather than generating an empty standup.
+
+This catches expired or missing tokens before the pipeline begins rather than mid-run.
+
+---
+
+## Fault Isolation
+
+Each collector is wrapped independently. If one source throws an unexpected error (network blip, API change, rate limit), it is logged as a warning and skipped — the bot generates a partial standup from whichever sources succeeded rather than failing entirely.
+
+```
+2026-04-22 09:00:04 WARNING Jira collector failed — skipping: Connection timeout
+2026-04-22 09:00:05 INFO Fetching Notion activity...
+```
+
+---
+
 ## Logging
 
 Every run appends to `standup.log` in the project root. Log lines include timestamps and severity:
 
 ```
-2026-04-21 09:00:01 INFO Standup Bot starting...
-2026-04-21 09:00:02 INFO Fetching activity since 2026-04-20 09:00 UTC
-2026-04-21 09:00:03 INFO Fetching GitHub activity...
-2026-04-21 09:00:06 INFO Posting draft to Slack DM (reaction timeout: 300s)...
-2026-04-21 09:05:07 INFO Standup approved.
+2026-04-22 09:00:01 INFO Standup Bot starting...
+2026-04-22 09:00:02 INFO Fetching activity since 2026-04-21 09:00 UTC
+2026-04-22 09:00:02 INFO Healthcheck — ✅ github  ✅ jira  ✅ slack  ✅ notion
+2026-04-22 09:00:03 INFO Fetching GitHub activity...
+2026-04-22 09:00:06 INFO Posting draft to Slack DM (reaction timeout: 300s)...
+2026-04-22 09:05:07 INFO Standup approved.
 ```
 
 `standup.log` is gitignored. To watch logs live: `tail -f standup.log`
@@ -182,7 +215,8 @@ standup-bot/
 ├── core/
 │   ├── summariser.py          # LLM call via LiteLLM + prompt construction
 │   ├── slack_delivery.py      # Posts drafts, polls reactions, finalises or deletes
-│   └── feedback.py            # Feedback log read/write
+│   ├── feedback.py            # Feedback log read/write
+│   └── healthcheck.py         # Startup token validation for all integrations
 ├── tests/
 │   ├── helpers.py             # Shared mock_response helper
 │   ├── test_github.py
@@ -209,6 +243,8 @@ standup-bot/
 **Add or remove sources** — comment out the relevant block in [main.py](main.py)
 
 **Change the reaction timeout** — set `SLACK_FEEDBACK_TIMEOUT` (seconds) in `.env`
+
+**Preview without posting** — run `python main.py --dry-run` to print the standup to stdout without touching Slack or `feedback_log.jsonl`
 
 **Post to a channel instead of a DM** — in [core/slack_delivery.py](core/slack_delivery.py), replace the `conversations.open` call with a hardcoded channel ID passed directly to `chat.postMessage`
 
