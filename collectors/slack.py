@@ -1,8 +1,11 @@
+import logging
 import requests
 from datetime import datetime, timezone
 from collectors.utils import activity_since
 
 HTTP_TIMEOUT = 10
+
+log = logging.getLogger(__name__)
 CONVERSATIONS_FETCH_LIMIT = 50
 CHANNEL_SCAN_LIMIT = 15
 HISTORY_LIMIT = 50
@@ -20,11 +23,11 @@ def fetch_slack_activity(token: str, since: datetime | None = None, user_id: str
         resp = requests.get("https://slack.com/api/auth.test", headers=headers, timeout=HTTP_TIMEOUT)
         identity = resp.json() if resp.ok else {}
         if not identity.get("ok"):
-            print(f"⚠️  Slack auth failed: {identity.get('error', 'unknown error')}")
+            log.warning("Slack auth failed: %s", identity.get("error", "unknown error"))
             return activity
         user_id = identity.get("user_id", "")
         if not user_id:
-            print("⚠️  Slack auth.test returned no user_id — cannot collect activity")
+            log.warning("Slack auth.test returned no user_id — cannot collect activity")
             return activity
 
     channels_resp = requests.get(
@@ -35,7 +38,7 @@ def fetch_slack_activity(token: str, since: datetime | None = None, user_id: str
     )
     channels_data = channels_resp.json() if channels_resp.ok else {}
     if not channels_data.get("ok"):
-        print(f"⚠️  Could not fetch Slack channels: {channels_data.get('error', 'unknown error')}")
+        log.warning("Could not fetch Slack channels: %s", channels_data.get("error", "unknown error"))
         return activity
 
     active_channels: set[str] = set()
@@ -53,7 +56,7 @@ def fetch_slack_activity(token: str, since: datetime | None = None, user_id: str
         history_data = history_resp.json() if history_resp.ok else {}
         if not history_data.get("ok"):
             if history_data.get("error") == "ratelimited":
-                print("⚠️  Slack rate limited — skipping remaining channels")
+                log.warning("Slack rate limited — skipping remaining channels")
                 break
             continue
 
