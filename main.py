@@ -98,6 +98,7 @@ def main():
 
     # Collect activity — each source is wrapped independently (circuit breaker)
     activity = {}
+    failed_collectors: list[str] = []
 
     if "github" in configs and health.get("github"):
         log.info("Fetching GitHub activity...")
@@ -105,6 +106,7 @@ def main():
             activity["github"] = fetch_github_activity(github_token, github_username, since=since)
         except Exception as e:
             log.warning("GitHub collector failed — skipping: %s", e)
+            failed_collectors.append("GitHub")
     elif "github" not in configs:
         log.info("Skipping GitHub (GITHUB_TOKEN or GITHUB_USERNAME not set)")
 
@@ -114,6 +116,7 @@ def main():
             activity["jira"] = fetch_jira_activity(jira_url, jira_email, jira_token, since=since)
         except Exception as e:
             log.warning("Jira collector failed — skipping: %s", e)
+            failed_collectors.append("Jira")
     elif "jira" not in configs:
         log.info("Skipping Jira (JIRA_BASE_URL, JIRA_EMAIL, or JIRA_API_TOKEN not set)")
 
@@ -123,6 +126,7 @@ def main():
             activity["slack"] = fetch_slack_activity(slack_token, since=since, user_id=slack_user_id)
         except Exception as e:
             log.warning("Slack collector failed — skipping: %s", e)
+            failed_collectors.append("Slack")
     elif "slack" not in configs:
         log.info("Skipping Slack collection (SLACK_BOT_TOKEN not set)")
 
@@ -132,6 +136,7 @@ def main():
             activity["notion"] = fetch_notion_activity(notion_token, since=since)
         except Exception as e:
             log.warning("Notion collector failed — skipping: %s", e)
+            failed_collectors.append("Notion")
     elif "notion" not in configs:
         log.info("Skipping Notion (NOTION_TOKEN not set)")
 
@@ -147,6 +152,9 @@ def main():
     except Exception as e:
         log.error("Failed to generate standup: %s", e)
         return
+
+    if failed_collectors:
+        standup += "\n\n⚠️ Data unavailable today: " + ", ".join(failed_collectors)
 
     # Dry run: print and exit without posting
     if args.dry_run:
