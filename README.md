@@ -1,6 +1,6 @@
 # Standup Bot
 
-Automatically collects your daily activity from GitHub, Jira, Slack, and Notion — then uses an LLM to write your standup and post it to your Slack DM every morning.
+Automatically collects your daily activity from GitHub, Jira, Slack, Notion, and local git repos — then uses an LLM to write your standup and post it to your Slack DM every morning.
 
 Supports any model via [LiteLLM](https://github.com/BerriAI/litellm): Anthropic Claude, OpenAI GPT, Google Gemini, Ollama cloud, local Ollama, and more.
 
@@ -82,7 +82,21 @@ Set `LLM_MODEL` in your `.env`. Defaults to `claude-sonnet-4-6` (Anthropic) if n
 
 > **Note:** `auth:test` is not a scope you add manually — it is available to all bot tokens by default.
 
-### 5. Set up Notion (optional)
+### 5. Set up local git repos (optional)
+
+Add these two variables to your `.env`:
+
+```
+GIT_REPO_PATHS=/Users/you/projects/myapp,/Users/you/projects/scripts
+GIT_AUTHOR=Your Name
+```
+
+- `GIT_REPO_PATHS` — comma-separated absolute paths to repos you want scanned
+- `GIT_AUTHOR` — name or email passed to `git log --author`; matches however your commits are attributed
+
+The collector runs `git log --since --author --oneline --no-merges` per repo. No API key or network access needed — it reads your local history directly. Repos that are not valid git directories are skipped with a warning.
+
+### 7. Set up Notion (optional)
 
 1. Go to https://www.notion.so/profile/integrations → **New integration**
 2. Copy the **Internal Integration Secret** (`secret_...`) into `NOTION_TOKEN`
@@ -90,7 +104,7 @@ Set `LLM_MODEL` in your `.env`. Defaults to `claude-sonnet-4-6` (Anthropic) if n
 
 > Without step 3, the token won't have access to any pages even if it's valid.
 
-### 6. Run
+### 8. Run
 
 ```bash
 python main.py
@@ -104,7 +118,7 @@ The bot validates all configured tokens (see [Startup Healthcheck](#startup-heal
 python main.py --dry-run
 ```
 
-### 7. Schedule it daily (runs at 9 am on weekdays)
+### 9. Schedule it daily (runs at 9 am on weekdays)
 
 ```bash
 crontab -e
@@ -207,6 +221,7 @@ You get up to 3 regenerations. Approved standups are stored in `feedback_log.jso
 standup-bot/
 ├── main.py                    # Entry point and orchestration
 ├── collectors/
+│   ├── git.py                 # Local git log collector (commits by author)
 │   ├── github.py              # GitHub merged PRs, open PRs, and code reviews
 │   ├── jira.py                # Jira ticket activity and comments
 │   ├── slack.py               # Slack messages sent and mentions received
@@ -219,6 +234,7 @@ standup-bot/
 │   └── healthcheck.py         # Startup token validation for all integrations
 ├── tests/
 │   ├── helpers.py             # Shared mock_response helper
+│   ├── test_git.py
 │   ├── test_github.py
 │   ├── test_jira.py
 │   ├── test_slack.py
@@ -245,6 +261,8 @@ standup-bot/
 **Change the reaction timeout** — set `SLACK_FEEDBACK_TIMEOUT` (seconds) in `.env`
 
 **Preview without posting** — run `python main.py --dry-run` to print the standup to stdout without touching Slack or `feedback_log.jsonl`
+
+**Adjust the Slack message layout** — edit `_build_blocks()` in [core/slack_delivery.py](core/slack_delivery.py) to change the Block Kit structure; the plain-text `text` field is always kept as a notification fallback
 
 **Post to a channel instead of a DM** — in [core/slack_delivery.py](core/slack_delivery.py), replace the `conversations.open` call with a hardcoded channel ID passed directly to `chat.postMessage`
 

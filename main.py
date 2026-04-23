@@ -9,6 +9,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from collectors.git import fetch_git_activity
 from collectors.github import fetch_github_activity
 from collectors.jira import fetch_jira_activity
 from collectors.slack import fetch_slack_activity
@@ -57,6 +58,8 @@ def main():
 
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     slack_user_id: str | None = os.getenv("SLACK_USER_ID") or None
+    git_repo_paths = [p for p in os.getenv("GIT_REPO_PATHS", "").split(",") if p.strip()]
+    git_author = os.getenv("GIT_AUTHOR", "")
 
     # Build configs dict for all configured integrations
     configs: dict = {}
@@ -139,6 +142,17 @@ def main():
             failed_collectors.append("Notion")
     elif "notion" not in configs:
         log.info("Skipping Notion (NOTION_TOKEN not set)")
+
+    # Git (local — no healthcheck needed, no network call)
+    if git_repo_paths and git_author:
+        log.info("Fetching git commit activity...")
+        try:
+            activity["git"] = fetch_git_activity(git_repo_paths, git_author, since=since)
+        except Exception as e:
+            log.warning("Git collector failed — skipping: %s", e)
+            failed_collectors.append("Git")
+    elif git_repo_paths or git_author:
+        log.info("Skipping git collector (both GIT_REPO_PATHS and GIT_AUTHOR must be set)")
 
     if not activity:
         log.warning("No activity collected — standup will be empty.")

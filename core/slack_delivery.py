@@ -12,6 +12,36 @@ REGEN_EMOJI = "arrows_clockwise"     # 🔁
 SKIP_EMOJI = "next_track_button"     # ⏭️
 
 
+def _build_blocks(title: str, standup_text: str, footer: str | None = None) -> list[dict]:
+    """Convert standup mrkdwn text into Slack Block Kit blocks.
+
+    Each double-newline-separated chunk becomes its own section block so that
+    the three standup sections (Done / In Progress / Blockers) render as distinct
+    visual groups with bold headers and bullet lists.
+    """
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
+        {"type": "divider"},
+    ]
+
+    for chunk in standup_text.split("\n\n"):
+        chunk = chunk.strip()
+        if chunk:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": chunk},
+            })
+
+    if footer:
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": footer}],
+        })
+
+    return blocks
+
+
 def _open_dm_channel(headers: dict, user_id: str) -> str:
     dm_resp = requests.post(
         "https://slack.com/api/conversations.open",
@@ -28,7 +58,6 @@ def _open_dm_channel(headers: dict, user_id: str) -> str:
     return channel_id
 
 
-
 def post_standup_draft(
     bot_token: str, standup_text: str, user_id: str, timeout: int = 120
 ) -> tuple[str, str]:
@@ -39,18 +68,17 @@ def post_standup_draft(
     }
     channel_id = _open_dm_channel(headers, user_id)
     today = date.today().strftime("%A, %B %d")
-    footer = (
-        f"\n\n_React to respond: ✅ approve · 🔁 regenerate (reply in thread with reason)"
-        f" · ⏭️ skip · Waiting {timeout}s…_"
-    )
+    title = f"🤖 Your Daily Standup — {today}"
+    footer = f"React to respond: ✅ approve · 🔁 regenerate (reply in thread with reason) · ⏭️ skip · Waiting {timeout}s…"
 
     msg_resp = requests.post(
         "https://slack.com/api/chat.postMessage",
         headers=headers,
         json={
             "channel": channel_id,
-            "text": f"*🤖 Your Daily Standup — {today}*\n\n{standup_text}{footer}",
+            "text": f"{title}\n\n{standup_text}",  # plain-text fallback for notifications
             "unfurl_links": False,
+            "blocks": _build_blocks(title, standup_text, footer=footer),
         },
         timeout=HTTP_TIMEOUT,
     )
@@ -122,7 +150,7 @@ def _fetch_thread_reply(headers: dict, channel_id: str, ts: str, user_id: str) -
 def finalize_draft(bot_token: str, channel_id: str, ts: str, standup_text: str) -> None:
     """Update the draft message to the clean final version (removes reaction footer)."""
     today = date.today().strftime("%A, %B %d")
-    clean_text = f"*🤖 Your Daily Standup — {today}*\n\n{standup_text}"
+    title = f"🤖 Your Daily Standup — {today}"
     headers = {
         "Authorization": f"Bearer {bot_token}",
         "Content-Type": "application/json",
@@ -130,7 +158,12 @@ def finalize_draft(bot_token: str, channel_id: str, ts: str, standup_text: str) 
     resp = requests.post(
         "https://slack.com/api/chat.update",
         headers=headers,
-        json={"channel": channel_id, "ts": ts, "text": clean_text},
+        json={
+            "channel": channel_id,
+            "ts": ts,
+            "text": f"{title}\n\n{standup_text}",
+            "blocks": _build_blocks(title, standup_text),
+        },
         timeout=HTTP_TIMEOUT,
     )
     result = resp.json() if resp.ok else {}
