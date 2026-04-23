@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from collectors.git import fetch_git_activity
 from collectors.github import fetch_github_activity
+from collectors.google_calendar import fetch_google_calendar_activity
 from collectors.jira import fetch_jira_activity
 from collectors.slack import fetch_slack_activity
 from collectors.notion import fetch_notion_activity
 from collectors.utils import activity_since
 from core.healthcheck import run_healthchecks
 from core.summariser import generate_standup
-from core.feedback import save_feedback, load_approved_examples
+from core.feedback import save_feedback, save_context, load_approved_examples, load_recent_context
 from core.slack_delivery import post_standup_draft, poll_for_reaction, finalize_draft, delete_message
 
 load_dotenv()
@@ -60,6 +61,7 @@ def main():
     slack_user_id: str | None = os.getenv("SLACK_USER_ID") or None
     git_repo_paths = [p for p in os.getenv("GIT_REPO_PATHS", "").split(",") if p.strip()]
     git_author = os.getenv("GIT_AUTHOR", "")
+    gcal_credentials = os.getenv("GOOGLE_CALENDAR_CREDENTIALS", "")
 
     # Build configs dict for all configured integrations
     configs: dict = {}
@@ -154,15 +156,27 @@ def main():
     elif git_repo_paths or git_author:
         log.info("Skipping git collector (both GIT_REPO_PATHS and GIT_AUTHOR must be set)")
 
+    # Google Calendar (optional — no healthcheck, credentials validated on first call)
+    if gcal_credentials:
+        log.info("Fetching Google Calendar activity...")
+        try:
+            activity["google_calendar"] = fetch_google_calendar_activity(gcal_credentials, since=since)
+        except Exception as e:
+            log.warning("Google Calendar collector failed — skipping: %s", e)
+            failed_collectors.append("Google Calendar")
+    else:
+        log.info("Skipping Google Calendar (GOOGLE_CALENDAR_CREDENTIALS not set)")
+
     if not activity:
         log.warning("No activity collected — standup will be empty.")
 
     approved_examples = load_approved_examples()
+    recent_context = load_recent_context()
     rejected_drafts: list[dict] = []
 
     log.info("Generating standup...")
     try:
-        standup = generate_standup(activity, model, approved_examples=approved_examples)
+        standup = generate_standup(activity, model, approved_examples=approved_examples, recent_context=recent_context)
     except Exception as e:
         log.error("Failed to generate standup: %s", e)
         return
@@ -201,6 +215,7 @@ def main():
             if action in ("approve", "timeout"):
                 if action == "approve":
                     save_feedback(standup, approved=True)
+                    save_context(standup)
                 finalize_draft(slack_token, channel_id, msg_ts, standup)
                 log.info("Standup %s.", "approved" if action == "approve" else "left as posted (timeout)")
                 break
@@ -215,6 +230,7 @@ def main():
                         activity, model,
                         rejected_drafts=rejected_drafts,
                         approved_examples=approved_examples,
+                        recent_context=recent_context,
                     )
                 except Exception as e:
                     log.error("Failed to regenerate: %s", e)
@@ -250,6 +266,7 @@ def main():
             if choice == "u":
                 log.info("Standup approved by user.")
                 save_feedback(standup, approved=True)
+                save_context(standup)
                 break
             elif choice == "d" and regenerations_left > 0:
                 try:
@@ -266,6 +283,7 @@ def main():
                         activity, model,
                         rejected_drafts=rejected_drafts,
                         approved_examples=approved_examples,
+                        recent_context=recent_context,
                     )
                 except Exception as e:
                     log.error("Failed to regenerate: %s", e)

@@ -1,6 +1,6 @@
 # Standup Bot
 
-Automatically collects your daily activity from GitHub, Jira, Slack, Notion, and local git repos — then uses an LLM to write your standup and post it to your Slack DM every morning.
+Automatically collects your daily activity from GitHub, Jira, Slack, Notion, Google Calendar, and local git repos — then uses an LLM to write your standup and post it to your Slack DM every morning.
 
 Supports any model via [LiteLLM](https://github.com/BerriAI/litellm): Anthropic Claude, OpenAI GPT, Google Gemini, Ollama cloud, local Ollama, and more.
 
@@ -96,7 +96,23 @@ GIT_AUTHOR=Your Name
 
 The collector runs `git log --since --author --oneline --no-merges` per repo. No API key or network access needed — it reads your local history directly. Repos that are not valid git directories are skipped with a warning.
 
-### 7. Set up Notion (optional)
+### 7. Set up Google Calendar (optional)
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) → create a project → enable the **Google Calendar API**
+2. **Option A — Service account** (recommended for automated runs):
+   - Create a service account, download the JSON key, and set `GOOGLE_CALENDAR_CREDENTIALS=/path/to/key.json`
+   - Share your calendar with the service account email (give it read access)
+3. **Option B — OAuth2 credentials**:
+   - Create an OAuth2 desktop client, download `credentials.json`, and set `GOOGLE_CALENDAR_CREDENTIALS=/path/to/credentials.json`
+   - On first run the bot opens a browser for authorisation and saves `token.json` alongside the credentials file
+
+```bash
+pip install google-api-python-client google-auth-oauthlib
+```
+
+> All-day events and declined invites are automatically excluded.
+
+### 9. Set up Notion (optional)
 
 1. Go to https://www.notion.so/profile/integrations → **New integration**
 2. Copy the **Internal Integration Secret** (`secret_...`) into `NOTION_TOKEN`
@@ -104,7 +120,7 @@ The collector runs `git log --since --author --oneline --no-merges` per repo. No
 
 > Without step 3, the token won't have access to any pages even if it's valid.
 
-### 8. Run
+### 10. Run
 
 ```bash
 python main.py
@@ -118,7 +134,7 @@ The bot validates all configured tokens (see [Startup Healthcheck](#startup-heal
 python main.py --dry-run
 ```
 
-### 9. Schedule it daily (runs at 9 am on weekdays)
+### 11. Schedule it daily (runs at 9 am on weekdays)
 
 ```bash
 crontab -e
@@ -129,6 +145,34 @@ Add:
 ```
 0 9 * * 1-5 cd /path/to/standup-bot && source .env && python main.py
 ```
+
+---
+
+## Running Context
+
+After each approved standup, a dated entry is saved to `context_log.jsonl`. On the next run, the last 5 entries are injected into the LLM prompt so the model can write "continued work on X" instead of re-describing the same task fresh every day.
+
+```
+2026-04-22 INFO Generating standup...
+# LLM receives context: "2026-04-21: Investigated flaky CI test in payments-service..."
+```
+
+The context file grows by one line per approved standup and is gitignored.
+
+---
+
+## Prompt Caching
+
+When using an Anthropic model, the static system prompt is sent with `cache_control: ephemeral`. On the second and subsequent runs within the 5-minute cache TTL, Anthropic returns the prompt tokens from cache, reducing cost by up to 90% on the system prompt prefix.
+
+Cache usage is logged after each LLM call:
+
+```
+2026-04-22 09:00:05 INFO Prompt cache — created: 487 tokens  read: 0 tokens
+2026-04-23 09:00:05 INFO Prompt cache — created: 0 tokens  read: 487 tokens
+```
+
+This works transparently — no configuration needed. Non-Anthropic models ignore the cache hint.
 
 ---
 
@@ -223,6 +267,7 @@ standup-bot/
 ├── collectors/
 │   ├── git.py                 # Local git log collector (commits by author)
 │   ├── github.py              # GitHub merged PRs, open PRs, and code reviews
+│   ├── google_calendar.py     # Google Calendar meetings (service account or OAuth2)
 │   ├── jira.py                # Jira ticket activity and comments
 │   ├── slack.py               # Slack messages sent and mentions received
 │   ├── notion.py              # Recently edited Notion pages
@@ -234,8 +279,10 @@ standup-bot/
 │   └── healthcheck.py         # Startup token validation for all integrations
 ├── tests/
 │   ├── helpers.py             # Shared mock_response helper
+│   ├── test_context.py
 │   ├── test_git.py
 │   ├── test_github.py
+│   ├── test_google_calendar.py
 │   ├── test_jira.py
 │   ├── test_slack.py
 │   ├── test_notion.py
@@ -244,6 +291,7 @@ standup-bot/
 │   └── test_feedback.py
 ├── standup.log                # Created on first run — gitignored
 ├── feedback_log.jsonl         # Created on first run — gitignored
+├── context_log.jsonl          # Created on first run — gitignored
 ├── .env                       # Your credentials (gitignored)
 ├── .env.example               # Credential and model configuration template
 ├── .python-version            # Pins Python 3.12 for pyenv
