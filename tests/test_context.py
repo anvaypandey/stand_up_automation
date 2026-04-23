@@ -53,7 +53,7 @@ def test_context_injected_into_summariser():
 
     context = [{"date": "2026-04-21", "standup": "Worked on auth service"}]
     with patch("core.summariser.litellm.completion", return_value=resp) as mock_comp:
-        generate_standup({}, "gpt-4o", recent_context=context)
+        generate_standup({}, "gpt-4o", config={"recent_context": context})
 
     system_content = mock_comp.call_args.kwargs["messages"][0]["content"]
     full_text = " ".join(b["text"] for b in system_content)
@@ -74,7 +74,7 @@ def test_no_context_still_works():
     resp.usage = None
 
     with patch("core.summariser.litellm.completion", return_value=resp) as mock_comp:
-        generate_standup({}, "gpt-4o", recent_context=[])
+        generate_standup({}, "gpt-4o", config={"recent_context": []})
 
     system_content = mock_comp.call_args.kwargs["messages"][0]["content"]
     assert len(system_content) == 1  # only the static block, no context block

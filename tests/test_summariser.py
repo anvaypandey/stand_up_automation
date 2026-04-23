@@ -41,7 +41,7 @@ def test_none_content_raises():
 
 def test_rejected_draft_builds_multiturn_messages():
     with patch("core.summariser.litellm.completion", return_value=_litellm_response("ok")) as mock_comp:
-        generate_standup({}, "gpt-4o", rejected_drafts=[{"standup": "bad draft", "reason": "too verbose"}])
+        generate_standup({}, "gpt-4o", config={"rejected_drafts": [{"standup": "bad draft", "reason": "too verbose"}]})
 
     messages = mock_comp.call_args.kwargs["messages"]
     # system + user + assistant (rejected) + user (critique)
@@ -58,7 +58,7 @@ def test_multiple_rejections_build_full_conversation():
         {"standup": "draft 2", "reason": "reason 2"},
     ]
     with patch("core.summariser.litellm.completion", return_value=_litellm_response("ok")) as mock_comp:
-        generate_standup({}, "gpt-4o", rejected_drafts=drafts)
+        generate_standup({}, "gpt-4o", config={"rejected_drafts": drafts})
 
     messages = mock_comp.call_args.kwargs["messages"]
     # system + user + (assistant + user) * 2
@@ -67,7 +67,7 @@ def test_multiple_rejections_build_full_conversation():
 
 def test_approved_examples_injected_into_first_message():
     with patch("core.summariser.litellm.completion", return_value=_litellm_response("ok")) as mock_comp:
-        generate_standup({}, "gpt-4o", approved_examples=["example standup text"])
+        generate_standup({}, "gpt-4o", config={"approved_examples": ["example standup text"]})
 
     first_user_msg = mock_comp.call_args.kwargs["messages"][1]["content"]
     assert "example standup text" in first_user_msg
@@ -75,7 +75,7 @@ def test_approved_examples_injected_into_first_message():
 
 def test_no_examples_no_preamble():
     with patch("core.summariser.litellm.completion", return_value=_litellm_response("ok")) as mock_comp:
-        generate_standup({}, "gpt-4o", approved_examples=[])
+        generate_standup({}, "gpt-4o", config={"approved_examples": []})
 
     first_user_msg = mock_comp.call_args.kwargs["messages"][1]["content"]
     assert "style guide" not in first_user_msg
@@ -94,7 +94,7 @@ def test_system_prompt_always_first():
 def test_rejected_draft_without_reason_key_does_not_crash():
     """draft missing 'reason' key — draft.get('reason') must return None gracefully."""
     with patch("core.summariser.litellm.completion", return_value=_litellm_response("ok")) as mock_comp:
-        generate_standup({}, "gpt-4o", rejected_drafts=[{"standup": "bad draft"}])
+        generate_standup({}, "gpt-4o", config={"rejected_drafts": [{"standup": "bad draft"}]})
     messages = mock_comp.call_args.kwargs["messages"]
     assert messages[3]["role"] == "user"
     assert "Please try again" in messages[3]["content"]

@@ -4,50 +4,48 @@ from datetime import datetime, timezone
 from pathlib import Path
 from collectors.utils import activity_since
 
+try:
+    from googleapiclient.discovery import build as _gcal_build
+    from google.oauth2 import service_account as _service_account
+    from google.oauth2.credentials import Credentials as _Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow as _InstalledAppFlow
+    from google.auth.transport.requests import Request as _Request
+    _GOOGLE_AVAILABLE = True
+except ImportError:
+    _GOOGLE_AVAILABLE = False
+
 log = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 
 def _build_service(credentials_path: str):
-    """Build a Google Calendar API service from a credentials file.
-
-    Supports service account JSON (type: service_account) and OAuth2 client
-    credentials JSON (installed / web). For OAuth2, a token.json file is
-    expected alongside the credentials file (generated on first authorisation).
-    """
-    try:
-        from googleapiclient.discovery import build
-        from google.oauth2 import service_account
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-    except ImportError as e:
+    if not _GOOGLE_AVAILABLE:
         raise ImportError(
             "Google Calendar dependencies missing. "
             "Run: pip install google-api-python-client google-auth-oauthlib"
-        ) from e
+        )
 
     path = Path(credentials_path)
     raw = json.loads(path.read_text())
 
     if raw.get("type") == "service_account":
-        creds = service_account.Credentials.from_service_account_info(raw, scopes=SCOPES)
+        creds = _service_account.Credentials.from_service_account_info(raw, scopes=SCOPES)
     else:
         # OAuth2 flow — look for token.json next to the credentials file
         token_path = path.parent / "token.json"
         creds = None
         if token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+            creds = _Credentials.from_authorized_user_file(str(token_path), SCOPES)
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                creds.refresh(_Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(str(path), SCOPES)
+                flow = _InstalledAppFlow.from_client_secrets_file(str(path), SCOPES)
                 creds = flow.run_local_server(port=0)
             token_path.write_text(creds.to_json())
 
-    return build("calendar", "v3", credentials=creds)
+    return _gcal_build("calendar", "v3", credentials=creds)
 
 
 def fetch_google_calendar_activity(credentials_path: str, since: datetime | None = None) -> dict:
