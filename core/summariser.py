@@ -3,7 +3,7 @@ import litellm
 
 litellm.telemetry = False
 
-DATA_SOURCES = ("github", "jira", "slack", "notion")
+DATA_SOURCES = ("github", "jira", "slack", "notion", "git")
 
 SYSTEM_PROMPT = """You are a helpful engineering assistant that writes concise daily standup updates.
 Given raw activity data from GitHub, Jira, Slack, and Notion, produce a standup message with three sections:

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch
 from tests.helpers import mock_response
-from core.slack_delivery import post_standup_draft, finalize_draft, delete_message
+from core.slack_delivery import post_standup_draft, finalize_draft, delete_message, _build_blocks
 
 DM_OPEN_OK = {"ok": True, "channel": {"id": "D123"}}
 POST_OK = {"ok": True, "ts": "1234567890.000001"}
@@ -96,3 +96,54 @@ def test_delete_message_logs_warning_on_failure(caplog):
             delete_message("token", "D123", "123.456")
     assert "Failed to delete message" in caplog.text
     assert "cant_delete_message" in caplog.text
+
+
+# ── _build_blocks ─────────────────────────────────────────────────────────────
+
+def test_build_blocks_starts_with_header():
+    blocks = _build_blocks("My Title", "some text")
+    assert blocks[0]["type"] == "header"
+    assert blocks[0]["text"]["text"] == "My Title"
+
+
+def test_build_blocks_second_block_is_divider():
+    blocks = _build_blocks("Title", "text")
+    assert blocks[1]["type"] == "divider"
+
+
+def test_build_blocks_each_paragraph_becomes_section():
+    standup = "*✅ Done*\n• PR merged\n\n*🔄 In Progress*\n• Feature X"
+    blocks = _build_blocks("Title", standup)
+    section_blocks = [b for b in blocks if b["type"] == "section"]
+    assert len(section_blocks) == 2
+    assert section_blocks[0]["text"]["type"] == "mrkdwn"
+    assert "Done" in section_blocks[0]["text"]["text"]
+    assert "In Progress" in section_blocks[1]["text"]["text"]
+
+
+def test_build_blocks_footer_adds_divider_and_context():
+    blocks = _build_blocks("Title", "text", footer="React with ✅")
+    types = [b["type"] for b in blocks]
+    assert types[-1] == "context"
+    assert types[-2] == "divider"
+    assert blocks[-1]["elements"][0]["text"] == "React with ✅"
+
+
+def test_build_blocks_no_footer_omits_context():
+    blocks = _build_blocks("Title", "text")
+    assert all(b["type"] != "context" for b in blocks)
+
+
+def test_post_standup_draft_includes_blocks_in_payload():
+    with patch("core.slack_delivery.requests.post") as mock_post:
+        mock_post.side_effect = [mock_response(DM_OPEN_OK), mock_response(POST_OK)]
+        post_standup_draft("token", "standup text", "U123")
+    _, kwargs = mock_post.call_args_list[1]
+    assert "blocks" in kwargs["json"]
+    assert isinstance(kwargs["json"]["blocks"], list)
+
+
+def test_finalize_draft_includes_blocks_in_payload():
+    with patch("core.slack_delivery.requests.post", return_value=mock_response({"ok": True})) as mock_post:
+        finalize_draft("token", "D123", "123.456", "final standup")
+    assert "blocks" in mock_post.call_args.kwargs["json"]
