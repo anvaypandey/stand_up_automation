@@ -3,6 +3,7 @@
 
 # Personal standup history
 feedback_log.jsonl
+context_log.jsonl
 
 # Python
 __pycache__/

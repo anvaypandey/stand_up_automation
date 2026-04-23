@@ -1,12 +1,15 @@
 import json
+import logging
 import litellm
 
 litellm.telemetry = False
 
-DATA_SOURCES = ("github", "jira", "slack", "notion", "git")
+log = logging.getLogger(__name__)
+
+DATA_SOURCES = ("github", "jira", "slack", "notion", "git", "google_calendar")
 
 SYSTEM_PROMPT = """You are a helpful engineering assistant that writes concise daily standup updates.
-Given raw activity data from GitHub, Jira, Slack, and Notion, produce a standup message with three sections:
+Given raw activity data from GitHub, Jira, Slack, Notion, and local git commits, produce a standup message with three sections:
 ✅ Done, 🔄 In Progress, and 🚧 Blockers/Waiting.
 
 Rules:
@@ -20,6 +23,29 @@ Rules:
 
 MAX_TOKENS = 1500
 LLM_TIMEOUT = 60
+
+
+def _build_system_content(recent_context: list[dict]) -> list[dict] | str:
+    """Build the system message content.
+
+    Returns a list of content blocks (Anthropic cache_control format) when
+    recent_context is provided, otherwise the plain string for compatibility.
+    The static system prompt block is marked for caching; the dynamic context
+    block is not, so it doesn't bust the cache on the static prefix.
+    """
+    static_block: dict = {
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},
+    }
+
+    if not recent_context:
+        return [static_block]
+
+    lines = [f"- {e['date']}: {e['standup'].splitlines()[0]}" for e in recent_context]
+    context_text = "Recent context from your previous standups (use this to write 'continued work on X' where relevant):\n" + "\n".join(lines)
+
+    return [static_block, {"type": "text", "text": context_text}]
 
 
 def _build_first_message(activity_data: dict, approved_examples: list[str]) -> str:
@@ -43,10 +69,11 @@ def generate_standup(
     model: str,
     rejected_drafts: list[dict] | None = None,
     approved_examples: list[str] | None = None,
+    recent_context: list[dict] | None = None,
 ) -> str:
     """Generate a standup using any LiteLLM-supported model."""
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _build_system_content(recent_context or [])},
         {"role": "user", "content": _build_first_message(activity_data, approved_examples or [])},
     ]
 
@@ -60,6 +87,8 @@ def generate_standup(
 
     response = litellm.completion(model=model, messages=messages, max_tokens=MAX_TOKENS, timeout=LLM_TIMEOUT)
 
+    _log_cache_usage(response)
+
     choices = response.choices or []
     if not choices:
         raise RuntimeError("LLM returned no choices — check your model name and API key.")
@@ -67,3 +96,13 @@ def generate_standup(
     if not content:
         raise RuntimeError("LLM returned an empty response — the request may have been filtered.")
     return content
+
+
+def _log_cache_usage(response) -> None:
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return
+    created = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    if created or read:
+        log.info("Prompt cache — created: %d tokens  read: %d tokens", created, read)
