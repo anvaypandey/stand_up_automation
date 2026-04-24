@@ -7,6 +7,9 @@ style examples on the next run so the LLM learns the user's preferred format.
 Approved standups are also summarised into context_log.jsonl so the LLM can
 reference recent work and write "continued work on X" instead of re-describing
 the same task fresh every day.
+
+Note: fcntl file locking is Unix-only (Linux/macOS). This module will not work
+on Windows.
 """
 
 import fcntl
@@ -20,34 +23,32 @@ CONTEXT_LOG = Path(__file__).parent.parent / "context_log.jsonl"
 CONTEXT_WINDOW = 5
 
 
+def _append_jsonl(path: Path, entry: dict) -> None:
+    """Append a JSON entry to a .jsonl file with an exclusive file lock."""
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(entry) + "\n")
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def save_feedback(standup: str, approved: bool, reason: str = "") -> None:
-    """Append a feedback entry to feedback_log.jsonl, with an exclusive file lock."""
-    entry = {
+    """Append a feedback entry to feedback_log.jsonl."""
+    _append_jsonl(FEEDBACK_LOG, {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "approved": approved,
         "reason": reason,
         "standup": standup,
-    }
-    with open(FEEDBACK_LOG, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(json.dumps(entry) + "\n")
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    })
 
 
 def save_context(standup: str) -> None:
     """Append the approved standup to context_log.jsonl for use as running context."""
-    entry = {
+    _append_jsonl(CONTEXT_LOG, {
         "date": datetime.now(timezone.utc).date().isoformat(),
         "standup": standup,
-    }
-    with open(CONTEXT_LOG, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(json.dumps(entry) + "\n")
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    })
 
 
 def load_recent_context(limit: int = CONTEXT_WINDOW) -> list[dict]:

@@ -1,15 +1,14 @@
 import json
 import logging
+from typing import TypedDict
 import litellm
 
 litellm.telemetry = False
 
 log = logging.getLogger(__name__)
 
-DATA_SOURCES = ("github", "jira", "slack", "notion", "git", "google_calendar")
-
 SYSTEM_PROMPT = """You are a helpful engineering assistant that writes concise daily standup updates.
-Given raw activity data from GitHub, Jira, Slack, Notion, and local git commits, produce a standup message with three sections:
+Given raw activity data from GitHub, Jira, Slack, Notion, local git commits, and Google Calendar meetings, produce a standup message with three sections:
 ✅ Done, 🔄 In Progress, and 🚧 Blockers/Waiting.
 
 Rules:
@@ -25,13 +24,17 @@ MAX_TOKENS = 1500
 LLM_TIMEOUT = 60
 
 
-def _build_system_content(recent_context: list[dict]) -> list[dict] | str:
+class StandupConfig(TypedDict, total=False):
+    rejected_drafts: list[dict]
+    approved_examples: list[str]
+    recent_context: list[dict]
+
+
+def _build_system_content(recent_context: list[dict]) -> list[dict]:
     """Build the system message content.
 
-    Returns a list of content blocks (Anthropic cache_control format) when
-    recent_context is provided, otherwise the plain string for compatibility.
-    The static system prompt block is marked for caching; the dynamic context
-    block is not, so it doesn't bust the cache on the static prefix.
+    The static system prompt block is marked for Anthropic prompt caching;
+    the dynamic context block is not, so it doesn't bust the cached prefix.
     """
     static_block: dict = {
         "type": "text",
@@ -58,26 +61,25 @@ def _build_first_message(activity_data: dict, approved_examples: list[str]) -> s
         parts.append("---")
 
     parts.append("Here is my activity from the last 24 hours. Please write my standup update.")
-    for source in DATA_SOURCES:
-        parts.append(f"\n{source.upper()} ACTIVITY:\n{json.dumps(activity_data.get(source, {}), indent=2)}")
+    for source, data in activity_data.items():
+        parts.append(f"\n{source.upper()} ACTIVITY:\n{json.dumps(data, indent=2)}")
 
     return "\n\n".join(parts)
 
 
-def generate_standup(
-    activity_data: dict,
-    model: str,
-    rejected_drafts: list[dict] | None = None,
-    approved_examples: list[str] | None = None,
-    recent_context: list[dict] | None = None,
-) -> str:
+def generate_standup(activity_data: dict, model: str, config: StandupConfig | None = None) -> str:
     """Generate a standup using any LiteLLM-supported model."""
+    cfg = config or {}
+    recent_context: list[dict] = cfg.get("recent_context") or []
+    approved_examples: list[str] = cfg.get("approved_examples") or []
+    rejected_drafts: list[dict] = cfg.get("rejected_drafts") or []
+
     messages = [
-        {"role": "system", "content": _build_system_content(recent_context or [])},
-        {"role": "user", "content": _build_first_message(activity_data, approved_examples or [])},
+        {"role": "system", "content": _build_system_content(recent_context)},
+        {"role": "user", "content": _build_first_message(activity_data, approved_examples)},
     ]
 
-    for draft in rejected_drafts or []:
+    for draft in rejected_drafts:
         messages.append({"role": "assistant", "content": draft["standup"]})
         critique = "That version wasn't quite right."
         if draft.get("reason"):

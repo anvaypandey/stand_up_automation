@@ -15,22 +15,31 @@ SKIP_EMOJI = "next_track_button"     # ⏭️
 def _build_blocks(title: str, standup_text: str, footer: str | None = None) -> list[dict]:
     """Convert standup mrkdwn text into Slack Block Kit blocks.
 
-    Each double-newline-separated chunk becomes its own section block so that
-    the three standup sections (Done / In Progress / Blockers) render as distinct
-    visual groups with bold headers and bullet lists.
+    Lines that look like bold section headers (*✅ Done*, *🔄 In Progress*, etc.)
+    start a new section block. All subsequent lines until the next header are
+    grouped with it. This is robust to single-newline LLM output.
     """
     blocks: list[dict] = [
         {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
         {"type": "divider"},
     ]
 
-    for chunk in standup_text.split("\n\n"):
-        chunk = chunk.strip()
-        if chunk:
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": chunk},
-            })
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        text = "\n".join(current_lines).strip()
+        if text:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+        current_lines.clear()
+
+    for line in standup_text.splitlines():
+        stripped = line.strip()
+        # A bold section header: starts and ends with * and has content between
+        if stripped.startswith("*") and stripped.endswith("*") and len(stripped) > 2:
+            _flush()
+        current_lines.append(line)
+
+    _flush()
 
     if footer:
         blocks.append({"type": "divider"})
